@@ -1,0 +1,17 @@
+[package]
+name = "scs225"
+version = "0.1.0"
+edition = "2021"
+description = "Feetech SCS225 bench tool (SCS protocol, big-endian, 0-1023)"
+
+[workspace]
+
+[dependencies]
+serialport = { version = "4.8", default-features = false }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
