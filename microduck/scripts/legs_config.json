@@ -1,0 +1,30 @@
+{
+  "baud": 1000000,
+  "port": null,
+  "imu": {
+    "bus": "/dev/i2c-2",
+    "addr": 104,
+    "pitch_sign": 1,
+    "roll_sign": 1
+  },
+  "gait": {
+    "period_s": 1.2,
+    "control_hz": 50,
+    "stride_deg": 10.0,
+    "lift_deg": 12.0,
+    "shift_deg": 4.0,
+    "ramp_s": 0.5
+  },
+  "joints": [
+    {"name": "left_hip_yaw",   "id": 20, "side":  1, "sign": 1, "center": 511, "home_deg":   0.00, "min_deg": -20.0, "max_deg":  20.0},
+    {"name": "left_hip_roll",  "id": 21, "side":  1, "sign": 1, "center": 511, "home_deg":  -5.00, "min_deg": -20.0, "max_deg":  20.0},
+    {"name": "left_hip_pitch", "id": 22, "side":  1, "sign": 1, "center": 511, "home_deg": -26.24, "min_deg": -70.0, "max_deg":  40.0},
+    {"name": "left_knee",      "id": 23, "side":  1, "sign": 1, "center": 511, "home_deg":  -0.28, "min_deg": -45.0, "max_deg":  70.0},
+    {"name": "left_ankle",     "id": 24, "side":  1, "sign": 1, "center": 511, "home_deg":  25.95, "min_deg": -30.0, "max_deg":  75.0},
+    {"name": "right_hip_yaw",  "id": 10, "side": -1, "sign": 1, "center": 511, "home_deg":   0.00, "min_deg": -20.0, "max_deg":  20.0},
+    {"name": "right_hip_roll", "id": 11, "side": -1, "sign": 1, "center": 511, "home_deg":   5.00, "min_deg": -20.0, "max_deg":  20.0},
+    {"name": "right_hip_pitch","id": 12, "side": -1, "sign": 1, "center": 511, "home_deg":  26.24, "min_deg": -40.0, "max_deg":  70.0},
+    {"name": "right_knee",     "id": 13, "side": -1, "sign": 1, "center": 511, "home_deg":   0.28, "min_deg": -70.0, "max_deg":  45.0},
+    {"name": "right_ankle",    "id": 14, "side": -1, "sign": 1, "center": 511, "home_deg": -25.95, "min_deg": -75.0, "max_deg":  30.0}
+  ]
+}
