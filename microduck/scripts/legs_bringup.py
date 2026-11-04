@@ -34,6 +34,7 @@ import fcntl
 import json
 import math
 import os
+import signal
 import sys
 import time
 
@@ -81,15 +82,25 @@ class Joint:
         if abs(self.sign) != 1:
             raise ValueError("%s: sign must be +1 or -1" % self.name)
 
-        lo = self.center + self.sign * self.min_deg * COUNT_PER_DEG
-        hi = self.center + self.sign * self.max_deg * COUNT_PER_DEG
-        self.min_raw = int(round(min(lo, hi)))
-        self.max_raw = int(round(max(lo, hi)))
-        if self.min_raw < 0 or self.max_raw > 1024:
-            raise ValueError(
-                "%s: limits %.0f..%.0f deg map outside 0..1024"
-                % (self.name, self.min_deg, self.max_deg)
-            )
+        if "min_raw" in spec or "max_raw" in spec:
+            lo = int(spec.get("min_raw", 0))
+            hi = int(spec.get("max_raw", 1024))
+            self.min_raw = max(0, min(lo, hi))
+            self.max_raw = min(1024, max(lo, hi))
+            self.min_deg = self.sign * (self.min_raw - self.center) * DEG_PER_COUNT
+            self.max_deg = self.sign * (self.max_raw - self.center) * DEG_PER_COUNT
+            if self.min_deg > self.max_deg:
+                self.min_deg, self.max_deg = self.max_deg, self.min_deg
+        else:
+            lo = self.center + self.sign * self.min_deg * COUNT_PER_DEG
+            hi = self.center + self.sign * self.max_deg * COUNT_PER_DEG
+            self.min_raw = int(round(min(lo, hi)))
+            self.max_raw = int(round(max(lo, hi)))
+            if self.min_raw < 0 or self.max_raw > 1024:
+                raise ValueError(
+                    "%s: limits %.0f..%.0f deg map outside 0..1024"
+                    % (self.name, self.min_deg, self.max_deg)
+                )
         self.home_raw = self.raw(self.home_deg)
 
     def raw(self, deg):
@@ -144,7 +155,7 @@ class Mpu6050:
         self.addr = addr
         self.bus = bus
         fcntl.ioctl(self.fd, self.I2C_SLAVE, addr)
-        who = self.read(REG_WHO_AM_I, 1)[0]
+        who = self.read(self.REG_WHO_AM_I, 1)[0]
         if who != 0x68:
             raise IOError(
                 "MPU6050 at 0x%02x on %s reports WHO_AM_I 0x%02x"
@@ -244,10 +255,10 @@ class Rig:
         self.imu = Mpu6050(bus, addr)
         return self.imu
 
-    def imu_pitch(self, sign=1):
+    def imu_pitch(self, sign=1, offset=0.0):
         if not self.imu:
             return 0.0
-        return sign * self.imu.sample()["pitch_deg"]
+        return sign * (self.imu.sample()["pitch_deg"] - offset)
 
     def ping_all(self):
         missing = []
@@ -425,18 +436,20 @@ def cmd_scan(cfg, args):
 def cmd_read(cfg, args):
     rig = Rig(cfg, args.port, args.baud)
     try:
-        rig.require_all()
-        raw = rig.read_raw()
         print("%-16s %4s %6s %8s %7s %6s %6s"
               % ("joint", "id", "raw", "deg", "volt", "temp", "load"))
         for joint in cfg.joints:
             sid = joint.id
+            raw = _read_position(rig, sid)
+            if raw is None:
+                print("%-16s %4d %6s %8s %6s %5s %6s"
+                      % (joint.name, sid, "--", "--", "?", "?", "?"))
+                continue
             volt = rig.bus.read_u8(sid, REG_PRESENT_VOLTAGE)
             temp = rig.bus.read_u8(sid, REG_PRESENT_TEMPERATURE)
             load = rig.bus.read_u16(sid, REG_PRESENT_LOAD)
             print("%-16s %4d %6d %8.2f %6s %5s %6s"
-                  % (joint.name, sid, raw[joint.name],
-                     joint.deg(raw[joint.name]),
+                  % (joint.name, sid, raw, joint.deg(raw),
                      "%.1fV" % (volt / 10.0) if volt is not None else "?",
                      "%dC" % temp if temp is not None else "?",
                      str(load)))
@@ -524,6 +537,145 @@ def cmd_stand(cfg, args):
         rig.close()
 
 
+def cmd_calibrate(cfg, args):
+    """Record the robot's current joint positions as the home/stand pose."""
+    rig = Rig(cfg, args.port, args.baud)
+    try:
+        rig.require_all()
+        if args.release:
+            rig.set_torque(False)
+            print("torque released — put the robot in the pose you want to keep.")
+            try:
+                input("Press Enter when the pose is right... ")
+            except EOFError:
+                pass
+        raw = rig.read_raw()
+        print("%-16s %6s %9s %9s" % ("joint", "raw", "old_home", "new_home"))
+        new_home = {}
+        for joint in cfg.joints:
+            deg = joint.deg(raw[joint.name])
+            new_home[joint.name] = deg
+            print("%-16s %6d %9.2f %9.2f%s"
+                  % (joint.name, raw[joint.name], joint.home_deg, deg,
+                     "" if joint.min_deg <= deg <= joint.max_deg else "  <-- OUTSIDE LIMITS"))
+        if args.save:
+            with open(cfg.path, "r") as f:
+                data = json.load(f)
+            for item in data.get("joints", []):
+                name = item.get("name")
+                if name in new_home:
+                    item["home_deg"] = round(new_home[name], 2)
+            with open(cfg.path, "w") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            print("\nsaved home pose to %s" % cfg.path)
+            print("next boot: enable legs-hold.service to keep this pose")
+        else:
+            print("\nnot saved; add --save to write these values to %s" % cfg.path)
+    finally:
+        rig.close()
+
+
+def cmd_hold(cfg, args):
+    """Ramp to the saved home pose, then hold it until SIGINT/SIGTERM."""
+    stop = {"value": False}
+
+    def _stop(_signum, _frame):
+        stop["value"] = True
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+
+    rig = Rig(cfg, args.port, args.baud)
+    try:
+        rig.require_all()
+        rig.set_torque(True)
+        home = {j.name: j.home_deg for j in cfg.joints}
+        print("ramping to saved home pose over %.1f s" % args.duration)
+        rig.move_deg(home, args.duration)
+        print("holding home pose; Ctrl-C or SIGTERM releases torque")
+        while not stop["value"]:
+            time.sleep(0.2)
+    finally:
+        try:
+            rig.set_torque(False)
+        except Exception:
+            pass
+        rig.close()
+        print("torque released")
+
+
+def cmd_release(cfg, args):
+    rig = Rig(cfg, args.port, args.baud)
+    try:
+        rig.require_all()
+        rig.set_torque(False)
+        print("torque released")
+    finally:
+        rig.close()
+
+
+def _read_position(rig, sid, tries=4):
+    """Read a valid SCS position, retrying corrupted 0..1024-bounded replies."""
+    for _ in range(tries):
+        raw = rig.bus.read_u16(sid, REG_PRESENT_POSITION)
+        if raw is not None and 0 <= raw <= 1024:
+            return raw
+        time.sleep(0.02)
+    return None
+
+
+def _one_joint_move(rig, joint, deg, duration):
+    """Move exactly one servo, without touching or reading the rest of the bus."""
+    if not rig.bus.ping(joint.id):
+        return None
+    rig.bus.torque(joint.id, True)
+    rig.bus.write(joint.id, 0x15, b"\x20")  # P=32, safer for bench tests
+    rig.bus.write(joint.id, 0x16, b"\x00")  # D=0
+    start = _read_position(rig, joint.id)
+    if start is None:
+        return None
+    target = joint.raw(deg)
+    steps = max(1, int(math.ceil(duration / 0.02)))
+    for i in range(1, steps + 1):
+        t = i / float(steps)
+        t = 0.5 - 0.5 * math.cos(math.pi * t)
+        raw = int(round(start + (target - start) * t))
+        rig.bus.write(joint.id, 0x2A, encode_u16(raw))
+        time.sleep(0.02)
+    time.sleep(0.05)
+    return _read_position(rig, joint.id)
+
+
+def cmd_sweep(cfg, args):
+    """Move every joint +deg, -deg, centre and report raw/limits."""
+    rig = Rig(cfg, args.port, args.baud)
+    try:
+        print("%-16s %6s %6s %6s %6s %10s  %s"
+              % ("joint", "id", "+deg", "-deg", "center", "limits", "ok"))
+        failed = []
+        for joint in cfg.joints:
+            plus = _one_joint_move(rig, joint, args.deg, args.duration)
+            minus = _one_joint_move(rig, joint, -args.deg, args.duration)
+            centre = _one_joint_move(rig, joint, 0.0, args.duration)
+            if plus is None or minus is None or centre is None:
+                failed.append(joint.name)
+                print("%-16s %6d %6s %6s %6s %10s  no answer"
+                      % (joint.name, joint.id, "-", "-", "-",
+                         "%d..%d" % (joint.min_raw, joint.max_raw)))
+                continue
+            lo, hi = joint.min_raw, joint.max_raw
+            ok = lo <= plus <= hi and lo <= minus <= hi and lo <= centre <= hi
+            print("%-16s %6d %6d %6d %6d %10s  %s"
+                  % (joint.name, joint.id, plus, minus, centre,
+                     "%d..%d" % (lo, hi), "yes" if ok else "OUT OF RANGE"))
+            rig.bus.torque(joint.id, False)
+        if failed:
+            print("\nno answer from: %s" % ", ".join(failed))
+    finally:
+        rig.close()
+
+
 def cmd_move(cfg, args):
     joint = cfg.by_name[args.joint]
     deg = args.deg
@@ -532,13 +684,27 @@ def cmd_move(cfg, args):
                          % (joint.name, deg, joint.min_deg, joint.max_deg))
     rig = Rig(cfg, args.port, args.baud)
     try:
-        rig.require_all()
-        rig.set_torque(True)
-        rig.move_deg({joint.name: deg}, args.duration)
-        raw = rig.read_raw()
-        print("%s: target %.2f deg = raw %d, read raw %d (%.2f deg)"
-              % (joint.name, deg, joint.raw(deg), raw[joint.name],
-                 joint.deg(raw[joint.name])))
+        # Single-joint test: do not require the whole bus. A flaky far-end
+        # servo must not block testing one joint.
+        if not rig.bus.ping(joint.id):
+            raise SystemExit("no answer from %s (id %d)" % (joint.name, joint.id))
+        rig.bus.torque(joint.id, True)
+        start = rig.bus.read_u16(joint.id, REG_PRESENT_POSITION)
+        if start is None:
+            raise SystemExit("%s (id %d) did not report its position"
+                             % (joint.name, joint.id))
+        target = joint.raw(deg)
+        steps = max(1, int(math.ceil(args.duration / 0.02)))
+        for i in range(1, steps + 1):
+            t = i / float(steps)
+            t = 0.5 - 0.5 * math.cos(math.pi * t)
+            raw = int(round(start + (target - start) * t))
+            rig.bus.write(joint.id, 0x2A, encode_u16(raw))
+            time.sleep(0.02)
+        now = rig.bus.read_u16(joint.id, REG_PRESENT_POSITION)
+        print("%s: target %.2f deg = raw %d, read raw %s (%.2f deg)"
+              % (joint.name, deg, target, now,
+                 joint.deg(now) if now is not None else float("nan")))
         if args.hold:
             try:
                 while True:
@@ -546,28 +712,70 @@ def cmd_move(cfg, args):
             except KeyboardInterrupt:
                 pass
         if args.release:
-            rig.set_torque(False)
+            rig.bus.torque(joint.id, False)
     finally:
         rig.close()
 
 
 def cmd_imu(cfg, args):
-    rig = Rig(cfg, args.port, args.baud)
+    bus = args.imu_bus or cfg.imu_cfg.get("bus", "/dev/i2c-2")
+    addr = args.imu_addr if args.imu_addr is not None else int(cfg.imu_cfg.get("addr", 0x68))
+    imu = None
     try:
-        imu = rig.attach_imu()
-        print("MPU6050 on %s@0x%02x; Ctrl-C to stop"
-              % (cfg.imu_cfg.get("bus", "/dev/i2c-2"),
-                 int(cfg.imu_cfg.get("addr", 0x68))))
+        imu = Mpu6050(bus, addr)
+        pitch_off = float(cfg.imu_cfg.get("pitch_offset", 0.0))
+        roll_off = float(cfg.imu_cfg.get("roll_offset", 0.0))
+        print("MPU6050 on %s@0x%02x; offsets pitch=%+.2f roll=%+.2f; Ctrl-C to stop"
+              % (bus, addr, pitch_off, roll_off))
         end = time.time() + args.seconds if args.seconds else None
         while end is None or time.time() < end:
             s = imu.sample()
             print("pitch=%+7.2f  roll=%+7.2f  gyro=(%+7.1f %+7.1f %+7.1f) dps"
-                  % (s["pitch_deg"], s["roll_deg"], *s["gyro_dps"]))
+                  % (s["pitch_deg"] - pitch_off, s["roll_deg"] - roll_off,
+                     *s["gyro_dps"]))
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass
     finally:
-        rig.close()
+        if imu is not None:
+            imu.close()
+
+
+def cmd_calibrate_imu(cfg, args):
+    bus = args.imu_bus or cfg.imu_cfg.get("bus", "/dev/i2c-2")
+    addr = args.imu_addr if args.imu_addr is not None else int(cfg.imu_cfg.get("addr", 0x68))
+    imu = None
+    try:
+        imu = Mpu6050(bus, addr)
+        print("keep the robot still on the surface you want to call level...")
+        end = time.time() + args.seconds
+        pitches = []
+        rolls = []
+        while time.time() < end:
+            s = imu.sample()
+            pitches.append(s["pitch_deg"])
+            rolls.append(s["roll_deg"])
+            time.sleep(0.05)
+        pitch = sum(pitches) / len(pitches)
+        roll = sum(rolls) / len(rolls)
+        print("measured: pitch=%+.2f roll=%+.2f over %d samples"
+              % (pitch, roll, len(pitches)))
+        if args.save:
+            with open(cfg.path, "r") as f:
+                data = json.load(f)
+            data.setdefault("imu", {})["pitch_offset"] = round(pitch, 2)
+            data["imu"]["roll_offset"] = round(roll, 2)
+            data["imu"]["bus"] = bus
+            data["imu"]["addr"] = addr
+            with open(cfg.path, "w") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            print("saved IMU zero offsets to %s" % cfg.path)
+        else:
+            print("not saved; add --save")
+    finally:
+        if imu is not None:
+            imu.close()
 
 
 def cmd_selftest(cfg, args):
@@ -579,6 +787,17 @@ def cmd_selftest(cfg, args):
 
 
 def cmd_walk(cfg, args):
+    if args.direction == "both":
+        for index, direction in enumerate(("forward", "backward")):
+            sub = argparse.Namespace(**vars(args))
+            sub.direction = direction
+            sub.release = bool(args.release and index == 1)
+            sub.verbose = args.verbose
+            cmd_walk(cfg, sub)
+            if index == 0:
+                time.sleep(0.5)
+        return
+
     direction = 1.0 if args.direction == "forward" else -1.0
     stride = 0.0 if args.march else args.stride
     lift = args.lift
@@ -626,7 +845,9 @@ def cmd_walk(cfg, args):
                 targets = clamp_targets(cfg, offsets, home_scale=amp)
 
                 if args.balance_gain and rig.imu:
-                    pitch = rig.imu_pitch(imu_sign)
+                    pitch = rig.imu_pitch(
+                        imu_sign,
+                        float(cfg.imu_cfg.get("pitch_offset", 0.0)))
                     correction = max(-args.max_correction,
                                      min(args.max_correction,
                                          args.balance_gain * pitch))
@@ -714,6 +935,25 @@ def build_parser():
     p.add_argument("--release", action="store_true")
     p.add_argument("--dry-run", action="store_true")
 
+    p = sub.add_parser("calibrate", parents=[common],
+                       help="record the current pose as the boot/home pose")
+    p.add_argument("--save", action="store_true",
+                   help="write the measured angles into legs_config.json")
+    p.add_argument("--release", action="store_true",
+                   help="release torque and wait for Enter before measuring")
+
+    p = sub.add_parser("hold", parents=[common],
+                       help="ramp to the saved home pose and hold it")
+    p.add_argument("--duration", type=float, default=3.0)
+
+    sub.add_parser("release", parents=[common],
+                   help="turn servo torque off")
+
+    p = sub.add_parser("sweep", parents=[common],
+                       help="move every joint +deg/-deg/centre and check limits")
+    p.add_argument("--deg", type=float, default=5.0)
+    p.add_argument("--duration", type=float, default=0.6)
+
     p = sub.add_parser("move", parents=[common],
                        help="move one joint to an angle for direction checks")
     p.add_argument("--joint", required=True)
@@ -724,8 +964,8 @@ def build_parser():
 
     p = sub.add_parser("walk", parents=[common],
                        help="open-loop forward/backward gait (pre-RL test)")
-    p.add_argument("--direction", choices=("forward", "backward"),
-                   default="forward")
+    p.add_argument("--direction", choices=("forward", "backward", "both"),
+                   default="forward", help="both = forward then backward")
     p.add_argument("--cycles", type=float, default=5.0)
     p.add_argument("--period", type=float, default=1.2)
     p.add_argument("--stride", type=float, default=10.0,
@@ -755,6 +995,17 @@ def build_parser():
     p = sub.add_parser("imu", parents=[common],
                        help="print live MPU6050 pitch/roll")
     p.add_argument("--seconds", type=float, default=5.0)
+    p.add_argument("--imu-bus", default=None,
+                   help="I2C bus override, e.g. /dev/i2c-3")
+    p.add_argument("--imu-addr", type=lambda x: int(x, 0), default=None,
+                   help="MPU6050 address, e.g. 0x68")
+
+    p = sub.add_parser("calibrate-imu", parents=[common],
+                       help="record the current pitch/roll as zero offsets")
+    p.add_argument("--seconds", type=float, default=2.0)
+    p.add_argument("--save", action="store_true")
+    p.add_argument("--imu-bus", default=None)
+    p.add_argument("--imu-addr", type=lambda x: int(x, 0), default=None)
 
     p = sub.add_parser("selftest", parents=[common],
                        help="check gait/limit maths without hardware")
@@ -773,9 +1024,14 @@ def main():
         "limits": cmd_limits,
         "center": cmd_center,
         "stand": cmd_stand,
+        "calibrate": cmd_calibrate,
+        "hold": cmd_hold,
+        "release": cmd_release,
+        "sweep": cmd_sweep,
         "move": cmd_move,
         "walk": cmd_walk,
         "imu": cmd_imu,
+        "calibrate-imu": cmd_calibrate_imu,
         "selftest": cmd_selftest,
     }
     handlers[args.cmd](cfg, args)

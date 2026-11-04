@@ -16,15 +16,125 @@
     "ramp_s": 0.5
   },
   "joints": [
-    {"name": "left_hip_yaw",   "id": 20, "side":  1, "sign": 1, "center": 511, "home_deg":   0.00, "min_deg": -20.0, "max_deg":  20.0},
-    {"name": "left_hip_roll",  "id": 21, "side":  1, "sign": 1, "center": 511, "home_deg":  -5.00, "min_deg": -20.0, "max_deg":  20.0},
-    {"name": "left_hip_pitch", "id": 22, "side":  1, "sign": 1, "center": 511, "home_deg": -26.24, "min_deg": -70.0, "max_deg":  40.0},
-    {"name": "left_knee",      "id": 23, "side":  1, "sign": 1, "center": 511, "home_deg":  -0.28, "min_deg": -45.0, "max_deg":  70.0},
-    {"name": "left_ankle",     "id": 24, "side":  1, "sign": 1, "center": 511, "home_deg":  25.95, "min_deg": -30.0, "max_deg":  75.0},
-    {"name": "right_hip_yaw",  "id": 10, "side": -1, "sign": 1, "center": 511, "home_deg":   0.00, "min_deg": -20.0, "max_deg":  20.0},
-    {"name": "right_hip_roll", "id": 11, "side": -1, "sign": 1, "center": 511, "home_deg":   5.00, "min_deg": -20.0, "max_deg":  20.0},
-    {"name": "right_hip_pitch","id": 12, "side": -1, "sign": 1, "center": 511, "home_deg":  26.24, "min_deg": -40.0, "max_deg":  70.0},
-    {"name": "right_knee",     "id": 13, "side": -1, "sign": 1, "center": 511, "home_deg":   0.28, "min_deg": -70.0, "max_deg":  45.0},
-    {"name": "right_ankle",    "id": 14, "side": -1, "sign": 1, "center": 511, "home_deg": -25.95, "min_deg": -75.0, "max_deg":  30.0}
+    {
+      "name": "left_hip_yaw",
+      "id": 20,
+      "side": 1,
+      "sign": 1,
+      "center": 511,
+      "home_deg": 0.0,
+      "min_deg": -44.24,
+      "max_deg": 34.28,
+      "min_raw": 360,
+      "max_raw": 628
+    },
+    {
+      "name": "left_hip_roll",
+      "id": 21,
+      "side": 1,
+      "sign": 1,
+      "center": 511,
+      "home_deg": -5.0,
+      "min_deg": -23.73,
+      "max_deg": 22.85,
+      "min_raw": 430,
+      "max_raw": 589
+    },
+    {
+      "name": "left_hip_pitch",
+      "id": 22,
+      "side": 1,
+      "sign": 1,
+      "center": 511,
+      "home_deg": -26.24,
+      "min_deg": -140.92,
+      "max_deg": 84.67,
+      "min_raw": 30,
+      "max_raw": 800
+    },
+    {
+      "name": "left_knee",
+      "id": 23,
+      "side": 1,
+      "sign": 1,
+      "center": 511,
+      "home_deg": -0.28,
+      "min_deg": -78.81,
+      "max_deg": 82.32,
+      "min_raw": 242,
+      "max_raw": 792
+    },
+    {
+      "name": "left_ankle",
+      "id": 24,
+      "side": 1,
+      "sign": 1,
+      "center": 511,
+      "home_deg": 25.95,
+      "min_deg": -40.14,
+      "max_deg": 37.5,
+      "min_raw": 374,
+      "max_raw": 639
+    },
+    {
+      "name": "right_hip_yaw",
+      "id": 10,
+      "side": -1,
+      "sign": 1,
+      "center": 511,
+      "home_deg": 0.0,
+      "min_deg": -44.24,
+      "max_deg": 34.28,
+      "min_raw": 360,
+      "max_raw": 628
+    },
+    {
+      "name": "right_hip_roll",
+      "id": 11,
+      "side": -1,
+      "sign": 1,
+      "center": 511,
+      "home_deg": 5.0,
+      "min_deg": -23.73,
+      "max_deg": 22.85,
+      "min_raw": 430,
+      "max_raw": 589
+    },
+    {
+      "name": "right_hip_pitch",
+      "id": 12,
+      "side": -1,
+      "sign": 1,
+      "center": 511,
+      "home_deg": 26.24,
+      "min_deg": -76.46,
+      "max_deg": 84.67,
+      "min_raw": 250,
+      "max_raw": 800
+    },
+    {
+      "name": "right_knee",
+      "id": 13,
+      "side": -1,
+      "sign": 1,
+      "center": 511,
+      "home_deg": 0.28,
+      "min_deg": -69.43,
+      "max_deg": 87.6,
+      "min_raw": 274,
+      "max_raw": 810
+    },
+    {
+      "name": "right_ankle",
+      "id": 14,
+      "side": -1,
+      "sign": 1,
+      "center": 511,
+      "home_deg": -25.95,
+      "min_deg": -37.21,
+      "max_deg": 33.69,
+      "min_raw": 384,
+      "max_raw": 626
+    }
   ]
 }

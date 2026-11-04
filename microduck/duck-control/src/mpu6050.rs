@@ -34,6 +34,13 @@ const ACCEL_LSB_PER_G: f64 = 16384.0;
 /// ±250 °/s full scale.
 const GYRO_LSB_PER_DPS: f64 = 131.0;
 
+/// Sensor -> trunk mounting correction, scalar-first.
+///
+/// Measured on the bench robot: the module sits about 10.8° about X and 10.9° about Y
+/// from the trunk frame, so a level body reads gravity `[0.19, -0.19, -0.965]`. This
+/// rotation maps that to `[0, 0, -1]`; gyro is rotated by the same quaternion.
+const MOUNT_CORRECTION: [f64; 4] = [0.9909742, 0.09478958, 0.09478958, 0.0];
+
 /// One IMU on one I2C bus.
 pub struct Mpu6050 {
     dev: LinuxI2CDevice,
@@ -102,7 +109,11 @@ impl Mpu6050 {
 
         // Specific force is `a - g`, so at rest the accelerometer points *up*; projected
         // gravity is its negation, which puts upright at `[0, 0, -1]` like the shipped IMU.
-        let gravity = normalise([-accel[0], -accel[1], -accel[2]]);
+        let gravity = rotate(
+            MOUNT_CORRECTION,
+            normalise([-accel[0], -accel[1], -accel[2]]),
+        );
+        let gyro = rotate(MOUNT_CORRECTION, gyro);
         let quat = tilt_quaternion(gravity);
 
         self.ready = true;
@@ -121,6 +132,22 @@ impl Mpu6050 {
     pub fn last(&self) -> ImuData {
         self.last
     }
+}
+
+/// Rotate a vector by a scalar-first unit quaternion.
+fn rotate(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
+    let (w, x, y, z) = (q[0], q[1], q[2], q[3]);
+    let (vx, vy, vz) = (v[0], v[1], v[2]);
+    // t = 2 * cross(q.xyz, v)
+    let tx = 2.0 * (y * vz - z * vy);
+    let ty = 2.0 * (z * vx - x * vz);
+    let tz = 2.0 * (x * vy - y * vx);
+    // v' = v + w*t + cross(q.xyz, t)
+    [
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx),
+    ]
 }
 
 /// Unit vector, falling back to "upright" rather than dividing by ~zero.

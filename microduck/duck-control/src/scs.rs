@@ -204,6 +204,21 @@ pub fn rad_to_raw(rad: f64) -> u16 {
     counts.round().clamp(POSITION_MIN as f64, POSITION_MAX as f64) as u16
 }
 
+/// Per-joint calibration. `offset` is the raw count of the joint's mechanical zero
+/// relative to the SCS225 centre (511); `direction` is +1 or -1 for a mirrored servo.
+///
+/// The SCS225's `PRESENT_POSITION` is an absolute potentiometer count: the firmware
+/// `calibrate`/offset instructions do not shift it. This project therefore keeps the
+/// calibration in software, exactly like `mini_bdx`'s `counts_to_rad`/`rad_to_counts`.
+pub fn raw_to_rad_cal(raw: u16, offset: i32, direction: f64) -> f64 {
+    direction * (raw as f64 - POSITION_CENTER as f64 - offset as f64) * RAD_PER_COUNT
+}
+
+pub fn rad_to_raw_cal(rad: f64, offset: i32, direction: f64) -> u16 {
+    let counts = POSITION_CENTER as f64 + direction * rad / RAD_PER_COUNT + offset as f64;
+    counts.round().clamp(POSITION_MIN as f64, POSITION_MAX as f64) as u16
+}
+
 pub struct ScsIo {
     bus: ScsBus,
     ids: Vec<u8>,
@@ -212,14 +227,26 @@ pub struct ScsIo {
     speed_phase: bool,
     /// Speeds held between refreshes, indexed as joint slots.
     last_velocities: [f64; NUM_JOINTS],
+    /// Raw-count offset of each joint's mechanical zero, indexed by slot.
+    offsets: [i32; NUM_JOINTS],
+    /// +1 or -1 per joint, indexed by slot.
+    directions: [f64; NUM_JOINTS],
     /// The orientation source, when one is fitted. The SCS bus carries no IMU, so this is
     /// a separate part on a separate bus; `None` leaves [`Sensors::imu`] at its default.
     imu: Option<crate::mpu6050::Mpu6050>,
 }
 
 impl ScsIo {
-    /// `slots[i]` is the joint index servo `ids[i]` drives.
-    pub fn open(path: &str, baud: u32, ids: Vec<u8>, slots: Vec<usize>) -> Result<Self> {
+    /// `slots[i]` is the joint index servo `ids[i]` drives. `offsets`/`directions`
+    /// are indexed by joint slot, so unmapped slots can stay at their defaults.
+    pub fn open(
+        path: &str,
+        baud: u32,
+        ids: Vec<u8>,
+        slots: Vec<usize>,
+        offsets: [i32; NUM_JOINTS],
+        directions: [f64; NUM_JOINTS],
+    ) -> Result<Self> {
         let bus = ScsBus::open(path, baud, Duration::from_millis(60))?;
         Ok(Self {
             bus,
@@ -227,8 +254,19 @@ impl ScsIo {
             slots,
             speed_phase: false,
             last_velocities: [0.0; NUM_JOINTS],
+            offsets,
+            directions,
             imu: None,
         })
+    }
+
+    #[inline]
+    fn slot_cal(&self, i: usize) -> Option<(usize, i32, f64)> {
+        let slot = *self.slots.get(i)?;
+        if slot >= NUM_JOINTS {
+            return None;
+        }
+        Some((slot, self.offsets[slot], self.directions[slot]))
     }
 
     /// Attach an already-opened IMU. Not part of `open` because a robot without one must
@@ -243,12 +281,15 @@ impl ScsIo {
 
     pub fn present_positions(&mut self) -> Result<Vec<f64>> {
         let mut out = Vec::with_capacity(self.ids.len());
-        for &sid in &self.ids {
+        for (i, &sid) in self.ids.iter().enumerate() {
             let pos = self
                 .bus
                 .read_u16(sid, REG_PRESENT_POSITION)
                 .ok_or_else(|| IoError::Bus(format!("servo {sid} did not answer")))?;
-            out.push(raw_to_rad(pos));
+            let (_, offset, direction) = self
+                .slot_cal(i)
+                .ok_or_else(|| IoError::Bus(format!("servo {sid} has no joint slot")))?;
+            out.push(raw_to_rad_cal(pos, offset, direction));
         }
         Ok(out)
     }
@@ -295,7 +336,12 @@ impl ScsIo {
                     }
                     let from = start.get(k).copied().unwrap_or(0.0);
                     let value = from + (target[slot] - from) * t;
-                    Some((sid, rad_to_raw(value).to_be_bytes().to_vec()))
+                    Some((
+                        sid,
+                        rad_to_raw_cal(value, self.offsets[slot], self.directions[slot])
+                            .to_be_bytes()
+                            .to_vec(),
+                    ))
                 })
                 .collect();
             self.bus.sync_write(REG_GOAL_POSITION, 2, &entries);
@@ -328,14 +374,14 @@ impl RobotIo for ScsIo {
                 .bus
                 .read_u16(sid, REG_PRESENT_POSITION)
                 .ok_or_else(|| IoError::Bus(format!("servo {sid} did not answer")))?;
-            let slot = self.slots.get(i).copied().unwrap_or(usize::MAX);
-            if slot < NUM_JOINTS {
-                sensors.positions[slot] = raw_to_rad(position);
+            if let Some((slot, offset, direction)) = self.slot_cal(i) {
+                sensors.positions[slot] = raw_to_rad_cal(position, offset, direction);
                 if (i % 2 == 0) == phase {
                     let speed = self.bus.read_u16(sid, REG_PRESENT_SPEED).ok_or_else(|| {
                         IoError::Bus(format!("servo {sid} speed did not answer"))
                     })?;
-                    self.last_velocities[slot] = (speed as i16) as f64 * RAD_PER_COUNT;
+                    self.last_velocities[slot] =
+                        direction * (speed as i16) as f64 * RAD_PER_COUNT;
                 }
                 sensors.velocities[slot] = self.last_velocities[slot];
             }
@@ -356,11 +402,13 @@ impl RobotIo for ScsIo {
             .iter()
             .enumerate()
             .filter_map(|(i, &sid)| {
-                let slot = self.slots.get(i).copied()?;
-                if slot >= NUM_JOINTS {
-                    return None;
-                }
-                Some((sid, rad_to_raw(targets.positions[slot]).to_be_bytes().to_vec()))
+                let (slot, offset, direction) = self.slot_cal(i)?;
+                Some((
+                    sid,
+                    rad_to_raw_cal(targets.positions[slot], offset, direction)
+                        .to_be_bytes()
+                        .to_vec(),
+                ))
             })
             .collect();
         self.bus.sync_write(REG_GOAL_POSITION, 2, &entries);

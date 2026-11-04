@@ -1,0 +1,17 @@
+[Unit]
+Description=Hold the calibrated SCS225 leg pose on boot
+After=dev-ttyACM0.device
+Wants=dev-ttyACM0.device
+
+[Service]
+Type=simple
+# The Waveshare/USB servo adapter can enumerate after systemd starts.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -e /dev/ttyACM0 ] && exit 0; sleep 1; done; echo "no /dev/ttyACM0" >&2; exit 1'
+ExecStart=/usr/bin/python3 /root/legs_bringup.py hold --duration 3
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

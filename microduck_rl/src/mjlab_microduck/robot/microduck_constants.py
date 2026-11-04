@@ -17,6 +17,9 @@ MICRODUCK_WALK_XML: Path = _ROBOT_DIR / "robot_walk.xml"
 # The 13-DoF bench robot: no head-yaw servo, so that actuator is gone and the joint is
 # pinned at zero by an equality in the XML. Everything else is the walk model.
 MICRODUCK_WALK_13DOF_XML: Path = _ROBOT_DIR / "robot_walk_13dof.xml"
+# The 10-DoF legs-only robot: the same walk model with the whole neck/head chain
+# removed. 10 actuators, 10 joints, no head pose command or rewards.
+MICRODUCK_WALK_10DOF_XML: Path = _ROBOT_DIR / "robot_walk_10dof.xml"
 # Ground-contact model (formerly "allcollisions"): curated collision set for
 # the parts that touch the floor in body-on-ground tasks (soles, legs, trunk
 # shells, head shells, jaw, battery, hips) — NOT every geom. Shared by
@@ -39,6 +42,7 @@ MICRODUCK_GROUNDCONTACT_ROLLERS_BACKLASH_XML: Path = _ROBOT_DIR / "robot_groundc
 
 assert MICRODUCK_WALK_XML.exists(), f"XML not found: {MICRODUCK_WALK_XML}"
 assert MICRODUCK_WALK_13DOF_XML.exists(), f"XML not found: {MICRODUCK_WALK_13DOF_XML}"
+assert MICRODUCK_WALK_10DOF_XML.exists(), f"XML not found: {MICRODUCK_WALK_10DOF_XML}"
 assert MICRODUCK_GROUNDCONTACT_XML.exists(), f"XML not found: {MICRODUCK_GROUNDCONTACT_XML}"
 assert MICRODUCK_ALLCOLLISIONS_XML.exists(), f"XML not found: {MICRODUCK_ALLCOLLISIONS_XML}"
 assert MICRODUCK_BALL_XML.exists(), f"XML not found: {MICRODUCK_BALL_XML}"
@@ -54,6 +58,10 @@ def get_walk_spec() -> mujoco.MjSpec:
 
 def get_walk_13dof_spec() -> mujoco.MjSpec:
     return mujoco.MjSpec.from_file(str(MICRODUCK_WALK_13DOF_XML))
+
+
+def get_walk_10dof_spec() -> mujoco.MjSpec:
+    return mujoco.MjSpec.from_file(str(MICRODUCK_WALK_10DOF_XML))
 
 
 def get_standup_spec() -> mujoco.MjSpec:
@@ -152,6 +160,24 @@ _BAM_ACTUATOR_KWARGS = dict(
 )
 actuators = FrictionDRBamActuatorCfg(**_BAM_ACTUATOR_KWARGS)
 
+# Legs-only hardware uses Feetech SCS225 (same case/gearing family as STS3215).
+# BAM has a 7.4 V STS3215 identification (m1). Use it for the 10-DoF model so the
+# actuator physics, armature and friction are closer to the real servo than the
+# XL330 M6 parameter set. kp_fw=32 mirrors the SCS225 factory position gain;
+# widen voltage to the 2S pack range and keep a floor above brown-out.
+_BAM_ACTUATOR_10DOF_KWARGS = dict(
+    motor_name="feetech_sts3215_7_4V",
+    model="m1",
+    target_names_expr=(r"^(?!passive_).*",),
+    kp_fw=32.0,
+    vin_range=(6.0, 8.4),
+    vin_drop_gain_range=(0.0, 0.2),
+    vin_min=5.5,
+    delay_min_lag=3,
+    delay_max_lag=6,
+)
+actuators_10dof = FrictionDRBamActuatorCfg(**_BAM_ACTUATOR_10DOF_KWARGS)
+
 # Same BAM actuator, but the firmware position loop reads the encoder THROUGH
 # the passive_<joint>_backlash hinges (the real encoder is on the output side
 # of the gear play). Only for the backlash model; the target regex already
@@ -193,6 +219,32 @@ MICRODUCK_WALK_13DOF_ROBOT_CFG = EntityCfg(
     collisions=(FULL_COLLISION,),
     articulation=EntityArticulationInfoCfg(
         actuators=(actuators,),
+        soft_joint_pos_limit_factor=0.9,
+    ),
+)
+
+# 10-DoF legs-only HOME: the same stand pose, without neck/head entries.
+HOME_FRAME_10DOF = EntityCfg.InitialStateCfg(
+    joint_pos={
+        r".*hip_yaw.*": 0.0,
+        r".*left_hip_roll.*": -0.0873,
+        r".*right_hip_roll.*": 0.0873,
+        r".*left_hip_pitch.*": -0.4579,
+        r".*right_hip_pitch.*": 0.4579,
+        r".*left_knee.*": -0.0049,
+        r".*right_knee.*": 0.0049,
+        r".*left_ankle.*": 0.4530,
+        r".*right_ankle.*": -0.4530,
+    },
+    joint_vel={".*": 0.0},
+)
+
+MICRODUCK_WALK_10DOF_ROBOT_CFG = EntityCfg(
+    spec_fn=get_walk_10dof_spec,
+    init_state=HOME_FRAME_10DOF,
+    collisions=(FULL_COLLISION,),
+    articulation=EntityArticulationInfoCfg(
+        actuators=(actuators_10dof,),
         soft_joint_pos_limit_factor=0.9,
     ),
 )

@@ -30,6 +30,12 @@ from .microduck_velocity_env_cfg import (
 from .microduck_velocity13_env_cfg import (
     make_microduck_velocity13_env_cfg,
 )
+from .microduck_velocity10_env_cfg import (
+    make_microduck_velocity10_env_cfg,
+)
+from .microduck_stand10_env_cfg import (
+    make_microduck_stand10_env_cfg,
+)
 from .microduck_standup_env_cfg import (
     make_microduck_standup_env_cfg,
     MicroduckStandUpRlCfg,
@@ -102,6 +108,24 @@ register_mjlab_task(
     task_id="Mjlab-Velocity-Flat-MicroDuck13",
     env_cfg=make_microduck_velocity13_env_cfg(),
     play_env_cfg=make_microduck_velocity13_env_cfg(play=True),
+    rl_cfg=MicroduckRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# 10-DoF legs-only robot (no neck/head): forward/backward only.
+register_mjlab_task(
+    task_id="Mjlab-Velocity-Flat-MicroDuck10",
+    env_cfg=make_microduck_velocity10_env_cfg(),
+    play_env_cfg=make_microduck_velocity10_env_cfg(play=True),
+    rl_cfg=MicroduckRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# 10-DoF legs-only standing task: zero command, stable HOME.
+register_mjlab_task(
+    task_id="Mjlab-Stand-Flat-MicroDuck10",
+    env_cfg=make_microduck_stand10_env_cfg(),
+    play_env_cfg=make_microduck_stand10_env_cfg(play=True),
     rl_cfg=MicroduckRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )

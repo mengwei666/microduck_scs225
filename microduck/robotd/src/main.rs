@@ -1115,6 +1115,17 @@ const SCS_SERVO_IDS: [u8; 13] = [20, 21, 22, 23, 24, 30, 31, 33, 10, 11, 12, 13,
 #[cfg(target_os = "linux")]
 const SCS_JOINT_SLOTS: [usize; 13] = [0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14];
 
+/// Per-joint software calibration, aligned with `SCS_SERVO_IDS`.
+///
+/// `offset` is the raw count of the joint's mechanical zero relative to the SCS225
+/// centre (511); `direction` is +1/-1 for a mirrored servo. The SCS225's
+/// `PRESENT_POSITION` is an absolute potentiometer count and is not shifted by the
+/// firmware calibrate/offset instructions, so the calibration has to live here.
+#[cfg(target_os = "linux")]
+const SCS_OFFSETS: [i32; 13] = [7, -11, -42, 40, 8, 0, 0, 0, 27, -1, 44, -26, -23];
+#[cfg(target_os = "linux")]
+const SCS_DIRECTIONS: [f64; 13] = [1.0; 13];
+
 /// The MPU6050 on the RK3588 bench port: JP5 `P1_A0`/`P1_A1` are I2C2, AD0 tied to ground.
 #[cfg(target_os = "linux")]
 const SCS_IMU_I2C: &str = "/dev/i2c-2";
@@ -1128,16 +1139,24 @@ fn open_scs(port: &str) -> duck_control::io::Result<duck_control::scs::ScsIo> {
     // still runs; that joint simply reads zero.
     let mut ids = Vec::new();
     let mut slots = Vec::new();
+    let mut offsets = [0i32; NUM_JOINTS];
+    let mut directions = [1.0f64; NUM_JOINTS];
     {
         let mut probe = duck_control::scs::ScsBus::open(
             port,
             1_000_000,
             std::time::Duration::from_millis(60),
         )?;
-        for (&id, &slot) in SCS_SERVO_IDS.iter().zip(SCS_JOINT_SLOTS.iter()) {
+        for (k, (&id, &slot)) in SCS_SERVO_IDS
+            .iter()
+            .zip(SCS_JOINT_SLOTS.iter())
+            .enumerate()
+        {
             if probe.ping(id) {
                 ids.push(id);
                 slots.push(slot);
+                offsets[slot] = SCS_OFFSETS[k];
+                directions[slot] = SCS_DIRECTIONS[k];
             } else {
                 tracing::warn!(servo = id, slot, "servo missing; that joint will read zero");
             }
@@ -1146,7 +1165,14 @@ fn open_scs(port: &str) -> duck_control::io::Result<duck_control::scs::ScsIo> {
     if ids.is_empty() {
         return Err(duck_control::io::IoError::Bus("no servos answered".into()));
     }
-    let mut io = duck_control::scs::ScsIo::open(port, 1_000_000, ids, slots)?;
+    let mut io = duck_control::scs::ScsIo::open(
+        port,
+        1_000_000,
+        ids,
+        slots,
+        offsets,
+        directions,
+    )?;
     match duck_control::mpu6050::Mpu6050::open(SCS_IMU_I2C, SCS_IMU_ADDR) {
         Ok(imu) => io.attach_imu(imu),
         Err(e) => tracing::warn!(
